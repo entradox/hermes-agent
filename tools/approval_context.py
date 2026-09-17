@@ -133,6 +133,18 @@ def _is_cron_approval_context() -> bool:
 # interactive round-trip that blocks for the full timeout with nobody to answer.
 _UNATTENDED_APPROVAL_PLATFORMS = frozenset({"webhook", "msgraph_webhook", "api_server"})
 
+# Unattended platforms that DO own a real approval bridge: the surface emits ``approval.request`` and accepts a
+# resolution back over its own protocol, so a pending approval there is answerable and must be kept.
+#   api_server → ``approval.request`` → ``POST /v1/runs/{id}/approval``
+#   (registered by gateway/platforms/api_server_runs.py via ``register_gateway_notify``)
+# Adding a bridge means adding the platform HERE and registering a listener in its adapter; a platform that is
+# merely unattended belongs in ``_UNATTENDED_APPROVAL_PLATFORMS`` only, so its flagged calls resolve from config
+# instead of parking on a card nothing can answer.
+_APPROVAL_BRIDGED_PLATFORMS = frozenset({"api_server"})
+
+# The subset with NO bridge: their pending approval is a permanent dead-end (the #652 shape).
+_UNBRIDGED_UNATTENDED_APPROVAL_PLATFORMS = _UNATTENDED_APPROVAL_PLATFORMS - _APPROVAL_BRIDGED_PLATFORMS
+
 
 def _is_unattended_platform_approval_context() -> bool:
     """True when the session platform is a programmatic/unattended surface.
@@ -143,6 +155,19 @@ def _is_unattended_platform_approval_context() -> bool:
     in #37284/#87509.
     """
     return _get_session_platform() in _UNATTENDED_APPROVAL_PLATFORMS
+
+
+def _is_unbridged_unattended_platform_approval_context() -> bool:
+    """True for an unattended platform whose pending approval NOBODY can answer.
+
+    ``webhook`` and ``msgraph_webhook`` bind a platform marker but register no approval listener and expose no
+    approval endpoint, so ``approval.request`` has no consumer: the turn stalls for the full ``approvals.timeout``
+    and then fails closed anyway. Only ``api_server`` (see ``_APPROVAL_BRIDGED_PLATFORMS``) may park.
+
+    A gateway-wide ``HERMES_EXEC_ASK=1`` (set by ``start_gateway()``) reaches these sessions too, which is why
+    the caller must clear ``is_ask`` here rather than rely on it being unset.
+    """
+    return _get_session_platform() in _UNBRIDGED_UNATTENDED_APPROVAL_PLATFORMS
 
 
 def _is_single_query_approval_context() -> bool:

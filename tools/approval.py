@@ -24,7 +24,8 @@ from tools import approval_context
 from tools.approval_context import (
     _get_session_platform, _is_cron_approval_context,
     _is_gateway_approval_context, _is_interactive_cli, _is_single_query_approval_context,
-    _is_unattended_platform_approval_context, _resolve_cli_approval_callback, _should_fall_through_to_cli_approval,
+    _is_unattended_platform_approval_context, _is_unbridged_unattended_platform_approval_context,
+    _resolve_cli_approval_callback, _should_fall_through_to_cli_approval,
     _tirith_fail_open, get_current_session_key,
 )
 from tools.approval_detection import (
@@ -915,12 +916,20 @@ def _presence(approval_callback=None) -> tuple:
     HERMES_INTERACTIVE=1 for sudo prompts, and a gateway sets HERMES_EXEC_ASK=1 at startup and
     passes its environ to every external cron worker (#110932) — in neither can a human answer
     the card, so the gate must resolve from ``approvals.<ctx>_mode`` instead of parking on a
-    pending approval. Unattended *platforms* keep ``is_ask``: api_server relies on it for the
-    ``/v1/runs`` approval bridge (``approval.request`` → ``POST /v1/runs/{id}/approval``)."""
+    pending approval.
+
+    The unbridged unattended platforms (``webhook``, ``msgraph_webhook``) clear it for the same
+    reason: the gateway-wide ``HERMES_EXEC_ASK=1`` reaches them, but they expose no approval
+    surface, so an approval parked there is a card nobody can answer — the turn waits out the
+    full ``approvals.timeout`` and then fails closed anyway. ``api_server`` deliberately KEEPS
+    ``is_ask``: it owns the ``/v1/runs`` approval bridge
+    (``approval.request`` → ``POST /v1/runs/{id}/approval``, registered by
+    ``gateway/platforms/api_server_runs.py``), so its pending state IS answerable."""
     approval_callback = _resolve_cli_approval_callback(approval_callback)
     is_cli, is_gateway = _is_interactive_cli(), _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
-    if _is_single_query_approval_context() or _is_cron_approval_context():
+    if (_is_single_query_approval_context() or _is_cron_approval_context()
+            or _is_unbridged_unattended_platform_approval_context()):
         is_cli = is_gateway = is_ask = False
     return approval_callback, is_cli, is_gateway, is_ask
 
