@@ -26,6 +26,7 @@ from unittest.mock import patch as mock_patch
 import pytest
 
 import tools.approval as approval_mod
+from gateway.session_context import reset_session_vars
 from tools import approval_context
 
 PLATFORMS = ("webhook", "msgraph_webhook", "api_server")
@@ -45,6 +46,21 @@ def _clear_context(monkeypatch):
     monkeypatch.setattr(approval_mod, "_YOLO_MODE_FROZEN", False)
     monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
     monkeypatch.setattr(approval_context, "_get_unattended_approval_mode", lambda: "deny")
+
+
+@pytest.fixture(autouse=True)
+def _restore_session_context(_clear_context):
+    """Teardown: return session contextvars to ``_UNSET`` ("never bound here").
+
+    ``clear_session_vars()`` leaves each var as ``""`` — an explicit "cleared" marker, not
+    ``_UNSET`` — so ``get_session_env()`` stops falling back to ``os.environ`` for the rest of
+    the process and a later test in the same interpreter reads the cleared value. Order-dependent
+    damage: run this file FIRST and six unrelated tests fail (TestWebhookApprovalExclusion x3,
+    TestApprovalTimeoutIsNotConsent x2, test_cron_not_interactive::test_cron_context_clears_leaked_presence).
+    Depends on ``_clear_context`` so env scrubbing still runs first.
+    """
+    yield
+    reset_session_vars()
 
 
 def _bind(platform):
