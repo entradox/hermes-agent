@@ -1760,6 +1760,34 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                 return False, False
             role_authorized = bool(getattr(self, "_allowed_role_ids", set()))
         raw_self_mention = self._self_is_explicitly_mentioned(message)
+        # "Addressed to me" for the vetoes below means a TYPED <@me> token or a ping of
+        # one of my roles — never a reply-ping, which Discord adds to ``message.mentions``
+        # silently when a user replies to one of this bot's messages. A reply to us whose
+        # typed text names another agent is that agent's message, not ours.
+        self_typed_mention = self._self_is_raw_mentioned(message)
+        raw_mentioned_ids = self._raw_mentioned_user_ids(message)
+        role_mentioned_ids = {
+            str(r.id) for r in getattr(message, "role_mentions", None) or []
+        }
+        if not self_typed_mention and role_mentioned_ids:
+            guild = getattr(message, "guild", None)
+            me = (
+                guild.get_member(self._client.user.id)
+                if guild is not None and self._client and self._client.user
+                else None
+            )
+            if me is not None and role_mentioned_ids & {str(r.id) for r in me.roles}:
+                self_typed_mention = True
+        peer_mention_ids = self._discord_peer_mention_ids()
+        if (
+            peer_mention_ids
+            and not self_typed_mention
+            and peer_mention_ids & (raw_mentioned_ids | role_mentioned_ids)
+        ):
+            logger.debug(
+                "[%s] admission: dropping message %s — mentions a peer agent, not self",
+                self.name, getattr(message, "id", "?"))
+            return False, False
         if not isinstance(message.channel, discord.DMChannel) and (
             message.mentions or raw_self_mention
         ):
@@ -1767,7 +1795,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                 mentioned.bot and mentioned != self._client.user
                 for mentioned in message.mentions
             )
-            if other_bots_mentioned and not raw_self_mention:
+            if other_bots_mentioned and not self_typed_mention:
                 return False, False
             ignore_no_mention = _scoped_gate_env("DISCORD_IGNORE_NO_MENTION", "true").lower() in {"true", "1", "yes"}
             if ignore_no_mention and not raw_self_mention and not other_bots_mentioned:
@@ -5170,6 +5198,19 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         raw = self.config.extra.get("free_response_channels")
         if raw is None:
             raw = self._gate_env("DISCORD_FREE_RESPONSE_CHANNELS")
+        return self._gate_csv_set(raw)
+
+    def _discord_peer_mention_ids(self) -> set:
+        """User/role ids that route to a PEER agent, not this bot.
+
+        Config: ``discord.peer_mention_ids`` (CSV) or env ``DISCORD_PEER_MENTION_IDS``.
+        A message ping-listing a peer id — user mention or role mention — is dropped
+        unless this bot was itself typed-mentioned, so neither a reply-ping nor a
+        bare presence in a free-response channel can pull us into a peer's task.
+        """
+        raw = self.config.extra.get("peer_mention_ids")
+        if raw is None:
+            raw = self._gate_env("DISCORD_PEER_MENTION_IDS")
         return self._gate_csv_set(raw)
 
     def _raw_mentioned_user_ids(self, message: Any) -> set:
